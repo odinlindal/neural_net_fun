@@ -29,15 +29,18 @@ float Node::feedForward(std::vector<float> inputs) {
 
     sum += bias;
 
-    //sigmoid function activation method
-    this->output_cache = 1.0f / (1.0f + exp(-sum));
+    // Tanh function activation method
+    this->output_cache = tanh(sum);
 
     return this->output_cache;
 }
 
 float Node::getActivationDerivative() {
     // Derivative of sigmoid: f(x) * (1 - f(x))
-    return output_cache * (1.0f - output_cache);
+    //return output_cache * (1.0f - output_cache);
+
+    // Derivative of tanh = 1 - output^2
+    return 1 - (output_cache * output_cache);
 }
 
 void Node::updateWeights(std::vector<float> inputs, float learningRate) {
