@@ -3,18 +3,21 @@
 #include <cstdlib>
 #include <numeric>
 #include <iostream>
+#include <fstream>
 
-Node::Node(int numInputs) {
+Node::Node(int numInputs, ActivationType type) {
 
     for (int i = 0; i < numInputs; i++) {
-        float randomWeight = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+        float randomWeight = ((float)rand() / RAND_MAX) * 0.2f - 0.1f;
         weights.push_back(randomWeight);
     }
 
-    bias = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+    //bias = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+    bias = 0.1f;
 
     output_cache = 0.0f;
     delta = 0.0f;
+    this->actType = type;
 }
 
 float Node::feedForward(std::vector<float> inputs) {
@@ -29,18 +32,35 @@ float Node::feedForward(std::vector<float> inputs) {
 
     sum += bias;
 
-    // Tanh function activation method
-    this->output_cache = tanh(sum);
+    if (this->actType == ActivationType::TANH) {
+        this->output_cache = tanh(sum);
+    }
+    else if (this->actType == ActivationType::RELU) {
+        this->output_cache = (sum > 0) ? sum : 0.0f;
+    }
+    else if (this->actType == ActivationType::SIGMOID) {
+        this->output_cache = 1.0f / (1.0f + exp(-sum));
+    }
+    else if (this->actType == ActivationType::SOFTMAX) {
+        // Pass the raw sum back to the Layer. 
+        // The Layer will handle the exp() and division.
+        this->output_cache = sum;
+    }
 
     return this->output_cache;
 }
 
 float Node::getActivationDerivative() {
-    // Derivative of sigmoid: f(x) * (1 - f(x))
-    //return output_cache * (1.0f - output_cache);
-
-    // Derivative of tanh = 1 - output^2
-    return 1 - (output_cache * output_cache);
+    if (this->actType == ActivationType::TANH) {
+        return 1.0f - (output_cache * output_cache);
+    }
+    else if (this->actType == ActivationType::RELU) {
+        return (output_cache > 0) ? 1.0f : 0.0f;
+    }
+    else if (this->actType == ActivationType::SIGMOID) {
+        return output_cache * (1.0f - output_cache);
+    }
+    return 0.0f;
 }
 
 void Node::updateWeights(std::vector<float> inputs, float learningRate) {
@@ -50,9 +70,9 @@ void Node::updateWeights(std::vector<float> inputs, float learningRate) {
     bias += learningRate * delta;
 }
 
-Layer::Layer(int numNeurons, int numInputs) {
+Layer::Layer(int numNeurons, int numInputs, ActivationType type) {
     for (int i = 0; i < numNeurons; i++) {
-        neurons.push_back(Node(numInputs));
+        neurons.push_back(Node(numInputs, type));
     }
 }
 
@@ -62,18 +82,33 @@ std::vector<float >Layer::feedForward(std::vector<float> inputs) {
     for (int i = 0; i < neurons.size(); i++) {
         outputs.push_back(neurons[i].feedForward(inputs));
     }
+
+    if (neurons.size() > 0 && neurons[0].actType == ActivationType::SOFTMAX) {
+        float sumExp = 0.0f;
+
+        for (int i = 0; i < outputs.size(); i++) {
+            outputs[i] = exp(outputs[i]); // e^x
+            sumExp += outputs[i];
+        }
+
+        for (int i = 0; i < outputs.size(); i++) {
+            outputs[i] /= sumExp;
+            neurons[i].output_cache = outputs[i];
+        }
+    }
+
     return outputs;
 }
 
 Network::Network(std::vector<int> layerNeurons, int outputs, int inputs) {
     if (layerNeurons.empty() || outputs <= 0 || inputs <= 0) return;
-    layers.push_back(Layer(layerNeurons[0], inputs));
+    layers.push_back(Layer(layerNeurons[0], inputs, ActivationType::RELU));
 
     for (int i = 1; i < layerNeurons.size(); i++) {
-        layers.push_back(Layer(layerNeurons[i], layers[i - 1].neurons.size()));
+        layers.push_back(Layer(layerNeurons[i], layers.back().neurons.size(), ActivationType::RELU));
     }
 
-    layers.push_back(Layer(outputs, layers.back().neurons.size()));
+    layers.push_back(Layer(outputs, layers.back().neurons.size(), ActivationType::SOFTMAX));
 
 }
 
@@ -101,9 +136,13 @@ void Network::backPropagate(std::vector<float> inputs, std::vector<float> target
         float output = outputLayer.neurons[i].output_cache;
         float target = targets[i];
 
-        float error = target - output;
+        if (outputLayer.neurons[i].actType == ActivationType::SOFTMAX) {
+            outputLayer.neurons[i].delta = target - output;
+        } else {
+            float error = target - output;
 
-        outputLayer.neurons[i].delta = error * outputLayer.neurons[i].getActivationDerivative();
+            outputLayer.neurons[i].delta = error * outputLayer.neurons[i].getActivationDerivative();
+        }
     }
 
     for (int i = layers.size() - 2; i >= 0; i--) {
@@ -131,4 +170,51 @@ void Network::backPropagate(std::vector<float> inputs, std::vector<float> target
         }
     }
 
+}
+
+void Network::saveNetwork(std::string filename) {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        std::cout << "Error: Could not save to file " << filename << std::endl;
+        return;
+    }
+
+    // Loop through every layer, every neuron
+    for (Layer& layer : layers) {
+        for (Node& neuron : layer.neurons) {
+            // Write Bias
+            file << neuron.bias << "\n";
+
+            // Write all Weights
+            for (float w : neuron.weights) {
+                file << w << "\n";
+            }
+        }
+    }
+
+    file.close();
+    std::cout << "Network saved to " << filename << std::endl;
+}
+
+bool Network::loadNetwork(std::string filename) {
+    std::ifstream file(filename);
+    if (!file.is_open()) return false; // File doesn't exist yet
+
+    // IMPORTANT: This assumes the Network structure (784->30->10) 
+    // is EXACTLY the same as when you saved it.
+    for (Layer& layer : layers) {
+        for (Node& neuron : layer.neurons) {
+            // Read Bias
+            file >> neuron.bias;
+
+            // Read Weights
+            for (int i = 0; i < neuron.weights.size(); i++) {
+                file >> neuron.weights[i];
+            }
+        }
+    }
+
+    file.close();
+    std::cout << "Network loaded from " << filename << "!" << std::endl;
+    return true;
 }
